@@ -102,17 +102,17 @@ export const INITIAL_USERS: User[] = [
   },
   {
     user_id: 6,
-    roll_number: 'FAC-CSE-004',
-    name: 'Dr. Vivek Mehta',
-    university_email: 'vivek.mehta@nsut.ac.in',
+    roll_number: 'ADMIN-001',
+    name: 'Admin',
+    university_email: 'admin@nsut.ac.in',
     phone: '+91 98111 22334',
     password_hash: 'argon2_admin_secure_salt',
     verification_status: 'verified',
     account_role: 'admin',
     account_status: 'active',
     joined_at: '2020-01-15T08:00:00Z',
-    branch: 'CSE Department Faculty',
-    year: 'Faculty & Proctor',
+    branch: 'Campus Administration',
+    year: 'Administrator',
     avatar_url: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&auto=format&fit=crop&q=80',
   },
 ];
@@ -563,7 +563,7 @@ export const INITIAL_DISPUTES: Dispute[] = [
     description: 'Security deposit was not instantly marked refunded on UPI; student resolved it post message confirmation.',
     resolution_status: 'resolved',
     resolution: 'Verified UPI reference number, deposit marked as refunded safely by proctor.',
-    assigned_admin: 6, // Dr. Vivek Mehta
+    assigned_admin: 6, // Admin
     raised_at: '2026-02-15T14:00:00Z',
     resolved_at: '2026-02-16T10:00:00Z',
   },

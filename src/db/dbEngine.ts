@@ -38,7 +38,7 @@ import {
   INITIAL_MESSAGES,
 } from './seedData.ts';
 
-const STORAGE_KEY = 'reusensut_db_v4';
+const STORAGE_KEY = 'reusensut_db_v5';
 
 export interface DatabaseState {
   users: User[];
@@ -649,7 +649,7 @@ export class DatabaseEngine {
       dispute_reason: params.disputeReason,
       description: params.description,
       resolution_status: 'open',
-      assigned_admin: 6, // Faculty Dr. Vivek Mehta
+      assigned_admin: 6, // Admin
       raised_at: new Date().toISOString(),
       resolved_at: null,
     });

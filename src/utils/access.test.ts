@@ -4,6 +4,14 @@ import { canAccessAdminConsole, canAccessSqlStudio } from './access.ts';
 import { INITIAL_USERS } from '../db/seedData.ts';
 
 test('canAccessAdminConsole and canAccessSqlStudio allow admin role and Aryan Kumar Singh only', () => {
+  const adminUsers = INITIAL_USERS.filter((u) => u.account_role === 'admin');
+  assert.equal(adminUsers.length, 1);
+  assert.equal(adminUsers[0].name, 'Admin');
+  assert.equal(
+    INITIAL_USERS.some((u) => /vivek|mehta/i.test(u.name) || /vivek|mehta/i.test(u.university_email)),
+    false
+  );
+
   for (const user of INITIAL_USERS) {
     const allowedAdmin = canAccessAdminConsole(user);
     const allowedSql = canAccessSqlStudio(user);
