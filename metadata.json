@@ -1,0 +1,6 @@
+{
+  "name": "ReUseNSUT - Campus Sharing Marketplace",
+  "description": "Verified campus circular economy and sharing marketplace for NSUT Delhi students, supporting buy, lend, exchange, and donate with trust scores, deposit tracking, and SQL schema explorer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
