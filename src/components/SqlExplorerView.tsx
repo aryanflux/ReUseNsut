@@ -9,6 +9,7 @@ import {
   Code2,
   AlertCircle,
   ShieldAlert,
+  FileCode,
 } from 'lucide-react';
 import { User } from '../types/schema.ts';
 import { DatabaseEngine, CANONICAL_QUERIES, PredefinedQuery } from '../db/dbEngine.ts';
@@ -33,8 +34,10 @@ export const SqlExplorerView: React.FC<SqlExplorerViewProps> = ({
   });
   const [executionTime, setExecutionTime] = useState<number>(0);
   const [queryError, setQueryError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'console' | 'schema'>('console');
+  const [activeTab, setActiveTab] = useState<'console' | 'schema' | 'ddl'>('console');
+  const [ddlView, setDdlView] = useState<'schema' | 'seed'>('schema');
   const [copied, setCopied] = useState(false);
+  const [copiedDdl, setCopiedDdl] = useState(false);
 
   if (!canAccessSqlStudio(currentUser)) {
     return (
@@ -136,7 +139,7 @@ export const SqlExplorerView: React.FC<SqlExplorerViewProps> = ({
           Run live SQL queries across the 15 normalized marketplace tables—from finding affordable semester textbooks to auditing overdue loans, trust scores, and security deposits.
         </p>
 
-        <div className="pt-2 flex gap-3">
+        <div className="pt-2 flex flex-wrap gap-3">
           <button
             onClick={() => setActiveTab('console')}
             className={`px-4 py-1.5 text-xs font-semibold transition-colors ${
@@ -156,6 +159,17 @@ export const SqlExplorerView: React.FC<SqlExplorerViewProps> = ({
             }`}
           >
             Relational Schema &amp; Tables (15)
+          </button>
+          <button
+            onClick={() => setActiveTab('ddl')}
+            className={`px-4 py-1.5 text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              activeTab === 'ddl'
+                ? 'bg-[#D96B27] text-white'
+                : 'bg-[#3D3936] text-[#CFC9C2] hover:text-white'
+            }`}
+          >
+            <FileCode className="w-3.5 h-3.5" />
+            <span>SQL DDL &amp; Seed Scripts</span>
           </button>
         </div>
       </div>
@@ -350,6 +364,68 @@ export const SqlExplorerView: React.FC<SqlExplorerViewProps> = ({
           dbState={dbEngine.getState()}
           onRunTableQuery={handleRunTableQuery}
         />
+      )}
+
+      {/* SQL DDL (schema.sql) & Seed DML (seed.sql) Tab */}
+      {activeTab === 'ddl' && (
+        <div className="bg-[#1E1C1A] border border-[#2C2927] overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-[#2C2927] border-b border-[#3D3936] text-xs">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setDdlView('schema')}
+                className={`px-3 py-1 text-xs font-mono font-semibold transition-colors ${
+                  ddlView === 'schema'
+                    ? 'bg-[#D96B27] text-white'
+                    : 'bg-[#3D3936] text-[#CFC9C2] hover:text-white'
+                }`}
+              >
+                schema.sql (CREATE TABLE DDL)
+              </button>
+              <button
+                onClick={() => setDdlView('seed')}
+                className={`px-3 py-1 text-xs font-mono font-semibold transition-colors ${
+                  ddlView === 'seed'
+                    ? 'bg-[#D96B27] text-white'
+                    : 'bg-[#3D3936] text-[#CFC9C2] hover:text-white'
+                }`}
+              >
+                seed.sql (INSERT INTO DML)
+              </button>
+            </div>
+
+            <button
+              onClick={() => {
+                const text =
+                  ddlView === 'schema'
+                    ? dbEngine.getSchemaSQL()
+                    : dbEngine.getSeedSQL();
+                navigator.clipboard.writeText(text);
+                setCopiedDdl(true);
+                setTimeout(() => setCopiedDdl(false), 2000);
+              }}
+              className="px-3 py-1 text-[#CFC9C2] hover:text-white hover:bg-[#3D3936] text-[11px] flex items-center gap-1.5 transition-colors"
+            >
+              {copiedDdl ? (
+                <Check className="w-3.5 h-3.5 text-[#1E5B3E]" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
+              <span>{copiedDdl ? 'Copied' : `Copy ${ddlView}.sql`}</span>
+            </button>
+          </div>
+
+          <div className="px-4 py-2.5 bg-[#252220] border-b border-[#3D3936] text-[11px] text-[#CFC9C2]">
+            {ddlView === 'schema'
+              ? 'Executed automatically on database boot via AlaSQL to define all 15 normalized tables with PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK, NOT NULL, and DEFAULT constraints.'
+              : 'Executed automatically after schema creation to populate all 15 relational tables via standard SQL INSERT INTO statements.'}
+          </div>
+
+          <pre className="p-4 max-h-[560px] overflow-auto text-[#F5EFE6] font-mono text-[11px] leading-relaxed whitespace-pre">
+            {ddlView === 'schema'
+              ? dbEngine.getSchemaSQL()
+              : dbEngine.getSeedSQL()}
+          </pre>
+        </div>
       )}
     </div>
   );

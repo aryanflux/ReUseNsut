@@ -1,8 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { DatabaseEngine, CANONICAL_QUERIES } from './dbEngine.ts';
+import { SCHEMA_SQL, SEED_SQL } from './sqlScripts.ts';
 
-test('DatabaseEngine initializes all 15 tables and executes AlaSQL queries', () => {
+test('schema.sql and seed.sql match runtime SQL DDL/DML scripts exactly', () => {
+  const diskSchema = fs.readFileSync(path.resolve('src/db/schema.sql'), 'utf8');
+  const diskSeed = fs.readFileSync(path.resolve('src/db/seed.sql'), 'utf8');
+  assert.equal(diskSchema, SCHEMA_SQL);
+  assert.equal(diskSeed, SEED_SQL);
+});
+
+test('DatabaseEngine initializes all 15 tables via SQL DDL and executes AlaSQL queries', () => {
   const engine = new DatabaseEngine();
   const state = engine.getState();
 
@@ -19,7 +29,6 @@ test('DatabaseEngine initializes all 15 tables and executes AlaSQL queries', () 
   assert.equal(res1.error, undefined);
   assert.equal(Array.isArray(res1.data), true);
   assert.equal(res1.data.length > 0, true);
-  // Verify returned fields
   assert.ok(res1.data[0].item_name);
   assert.ok(res1.data[0].seller_name);
 });
@@ -34,7 +43,7 @@ test('DatabaseEngine executes joins across Loans, Transactions, and Users', () =
   assert.equal(Array.isArray(res2.data), true);
 });
 
-test('DatabaseEngine creates a listing and updates state dynamically', () => {
+test('DatabaseEngine creates a listing and executes request->loan->return via SQL DML', () => {
   const engine = new DatabaseEngine();
   const beforeCount = engine.getState().listings.length;
 
@@ -58,6 +67,23 @@ test('DatabaseEngine creates a listing and updates state dynamically', () => {
   assert.equal(sqlRes.error, undefined);
   assert.equal(sqlRes.data.length, 1);
   assert.equal(sqlRes.data[0].price, 90);
+
+  // Create request -> accept -> return borrowed item -> check deposit + refund rows in Payments
+  const req = engine.createRequest({
+    listingId: result.listing.listing_id,
+    requesterId: 2,
+    requestMessage: 'Borrowing for mid-sems',
+  });
+  const accepted = engine.acceptRequest(req.request_id);
+  assert.ok(accepted.loan);
+  engine.returnBorrowedItem(accepted.transaction.transaction_id, 'Perfect');
+
+  const paymentsRes = engine.executeSQL(
+    `SELECT payment_type, amount FROM Payments WHERE transaction_id = ${accepted.transaction.transaction_id} ORDER BY payment_id ASC`
+  );
+  assert.equal(paymentsRes.data.length, 2);
+  assert.equal(paymentsRes.data[0].payment_type, 'deposit');
+  assert.equal(paymentsRes.data[1].payment_type, 'refund');
 });
 
 test('All 15 relational tables are queryable via SQL and SchemaDiagram metadata is consistent', async () => {
@@ -78,4 +104,32 @@ test('All 15 relational tables are queryable via SQL and SchemaDiagram metadata 
     assert.equal(res.error, undefined, `Query failed on table ${table.name}: ${res.error}`);
     assert.equal(Array.isArray(res.data), true);
   }
+});
+
+test('DatabaseEngine supports createReport and toggleSavedListing via SQL DML', () => {
+  const engine = new DatabaseEngine();
+  const initialReports = engine.getState().reports.length;
+  engine.createReport({
+    reporterId: 2,
+    reportedUserId: 1,
+    listingId: 1,
+    reportReason: 'misleading_condition',
+    description: 'Test SQL report insert',
+  });
+  assert.equal(engine.getState().reports.length, initialReports + 1);
+
+  const savedBefore = engine.getState().savedListings.some(
+    (s) => s.user_id === 2 && s.listing_id === 3
+  );
+  engine.toggleSavedListing(2, 3);
+  const savedAfter = engine.getState().savedListings.some(
+    (s) => s.user_id === 2 && s.listing_id === 3
+  );
+  assert.equal(savedAfter, !savedBefore);
+
+  engine.toggleSavedListing(2, 3);
+  const savedRestored = engine.getState().savedListings.some(
+    (s) => s.user_id === 2 && s.listing_id === 3
+  );
+  assert.equal(savedRestored, savedBefore);
 });

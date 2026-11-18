@@ -1,5 +1,6 @@
-// ReUseNSUT Relational Database Engine and State Store
-// Integrates in-memory store with alasql for real-time SQL queries
+// ReUseNSUT Relational Database Engine
+// Creates all 15 normalized tables via SQL DDL (schema.sql), seeds via SQL DML (seed.sql),
+// and executes live SQL INSERT / UPDATE / DELETE / SELECT queries via AlaSQL.
 
 import alasql from 'alasql';
 import {
@@ -20,25 +21,9 @@ import {
   Message,
   EnrichedListing,
 } from '../types/schema.ts';
-import {
-  INITIAL_USERS,
-  INITIAL_CATEGORIES,
-  INITIAL_ITEMS,
-  INITIAL_ITEM_IMAGES,
-  INITIAL_LISTINGS,
-  INITIAL_LISTING_REQUESTS,
-  INITIAL_TRANSACTIONS,
-  INITIAL_LOANS,
-  INITIAL_PAYMENTS,
-  INITIAL_REVIEWS,
-  INITIAL_DISPUTES,
-  INITIAL_SAVED_LISTINGS,
-  INITIAL_REPORTS,
-  INITIAL_REPORT_ACTIONS,
-  INITIAL_MESSAGES,
-} from './seedData.ts';
+import { SCHEMA_SQL, SEED_SQL } from './sqlScripts.ts';
 
-const STORAGE_KEY = 'reusensut_db_v5';
+const STORAGE_KEY = 'reusensut_db_v6_sql';
 
 export interface DatabaseState {
   users: User[];
@@ -207,51 +192,120 @@ ORDER BY p.payment_id DESC;`,
   },
 ];
 
+let dbInstanceCounter = 0;
+
+function normalizeRow<T extends Record<string, any>>(row: Record<string, any>): T {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(row)) {
+    if (v === undefined || (typeof v === 'number' && Number.isNaN(v))) {
+      out[k] = null;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out as T;
+}
+
 export class DatabaseEngine {
-  private state: DatabaseState;
+  private sqlDb: any;
+  private state!: DatabaseState;
   private listeners: (() => void)[] = [];
 
   constructor() {
-    this.state = this.loadState();
-    this.syncAlasql();
+    dbInstanceCounter += 1;
+    this.sqlDb = new (alasql as any).Database(`reusensut_db_${dbInstanceCounter}`);
+    this.initializeFromSQL();
   }
 
-  private loadState(): DatabaseState {
+  private initializeFromSQL() {
+    // 1. Create all 15 relational tables using SQL DDL (CREATE TABLE ...)
+    this.sqlDb.exec(SCHEMA_SQL);
+
+    // 2. Restore persisted rows if present in localStorage; otherwise execute SEED_SQL
+    let restored = false;
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        return JSON.parse(stored);
+        const parsed = JSON.parse(stored) as DatabaseState;
+        this.hydrateTablesFromSnapshot(parsed);
+        restored = true;
       }
     } catch {
-      // Fallback if localStorage is disabled or corrupt
+      // Fall back to fresh SQL seed if localStorage is unavailable or corrupt
     }
 
+    if (!restored) {
+      this.sqlDb.exec(SEED_SQL);
+    }
+
+    this.state = this.readAllTablesFromSQL();
+  }
+
+  private insertRow(tableName: string, row: Record<string, any>) {
+    const entries = Object.entries(row).filter(
+      ([, v]) => v !== null && v !== undefined
+    );
+    const cols = entries.map(([k]) => k).join(', ');
+    const placeholders = entries.map(() => '?').join(', ');
+    const values = entries.map(([, v]) => v);
+    this.sqlDb.exec(
+      `INSERT INTO ${tableName} (${cols}) VALUES (${placeholders})`,
+      values
+    );
+  }
+
+  private hydrateTablesFromSnapshot(snapshot: DatabaseState) {
+    // Insert in foreign-key dependency order
+    for (const row of snapshot.users || []) this.insertRow('Users', row);
+    for (const row of snapshot.categories || []) this.insertRow('Categories', row);
+    for (const row of snapshot.items || []) this.insertRow('Items', row);
+    for (const row of snapshot.itemImages || []) this.insertRow('Item_Images', row);
+    for (const row of snapshot.listings || []) this.insertRow('Listings', row);
+    for (const row of snapshot.listingRequests || []) this.insertRow('Listing_Requests', row);
+    for (const row of snapshot.transactions || []) this.insertRow('Transactions', row);
+    for (const row of snapshot.loans || []) this.insertRow('Loans', row);
+    for (const row of snapshot.payments || []) this.insertRow('Payments', row);
+    for (const row of snapshot.reviews || []) this.insertRow('Reviews', row);
+    for (const row of snapshot.disputes || []) this.insertRow('Disputes', row);
+    for (const row of snapshot.savedListings || []) this.insertRow('Saved_Listings', row);
+    for (const row of snapshot.reports || []) this.insertRow('Reports', row);
+    for (const row of snapshot.reportActions || []) this.insertRow('Report_Actions', row);
+    for (const row of snapshot.messages || []) this.insertRow('Messages', row);
+  }
+
+  private queryTable<T extends Record<string, any>>(sql: string): T[] {
+    const rows = this.sqlDb.exec(sql);
+    if (!Array.isArray(rows)) return [];
+    return rows.map((r: Record<string, any>) => normalizeRow<T>(r));
+  }
+
+  private readAllTablesFromSQL(): DatabaseState {
     return {
-      users: [...INITIAL_USERS],
-      categories: [...INITIAL_CATEGORIES],
-      items: [...INITIAL_ITEMS],
-      itemImages: [...INITIAL_ITEM_IMAGES],
-      listings: [...INITIAL_LISTINGS],
-      listingRequests: [...INITIAL_LISTING_REQUESTS],
-      transactions: [...INITIAL_TRANSACTIONS],
-      loans: [...INITIAL_LOANS],
-      payments: [...INITIAL_PAYMENTS],
-      reviews: [...INITIAL_REVIEWS],
-      disputes: [...INITIAL_DISPUTES],
-      savedListings: [...INITIAL_SAVED_LISTINGS],
-      reports: [...INITIAL_REPORTS],
-      reportActions: [...INITIAL_REPORT_ACTIONS],
-      messages: [...INITIAL_MESSAGES],
+      users: this.queryTable<User>('SELECT * FROM Users ORDER BY user_id ASC'),
+      categories: this.queryTable<Category>('SELECT * FROM Categories ORDER BY category_id ASC'),
+      items: this.queryTable<Item>('SELECT * FROM Items ORDER BY item_id DESC'),
+      itemImages: this.queryTable<ItemImage>('SELECT * FROM Item_Images ORDER BY image_id DESC'),
+      listings: this.queryTable<Listing>('SELECT * FROM Listings ORDER BY listing_id ASC'),
+      listingRequests: this.queryTable<ListingRequest>('SELECT * FROM Listing_Requests ORDER BY request_id DESC'),
+      transactions: this.queryTable<Transaction>('SELECT * FROM Transactions ORDER BY transaction_id DESC'),
+      loans: this.queryTable<Loan>('SELECT * FROM Loans ORDER BY transaction_id DESC'),
+      payments: this.queryTable<Payment>('SELECT * FROM Payments ORDER BY payment_id DESC'),
+      reviews: this.queryTable<Review>('SELECT * FROM Reviews ORDER BY review_id DESC'),
+      disputes: this.queryTable<Dispute>('SELECT * FROM Disputes ORDER BY dispute_id DESC'),
+      savedListings: this.queryTable<SavedListing>('SELECT * FROM Saved_Listings ORDER BY saved_at ASC'),
+      reports: this.queryTable<Report>('SELECT * FROM Reports ORDER BY report_id DESC'),
+      reportActions: this.queryTable<ReportAction>('SELECT * FROM Report_Actions ORDER BY report_action_id DESC'),
+      messages: this.queryTable<Message>('SELECT * FROM Messages ORDER BY message_id ASC'),
     };
   }
 
-  private saveState() {
+  private syncAndPersist() {
+    this.state = this.readAllTablesFromSQL();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
     } catch {
-      // Ignore write errors
+      // Ignore write errors in non-browser/private contexts
     }
-    this.syncAlasql();
     this.notify();
   }
 
@@ -270,80 +324,46 @@ export class DatabaseEngine {
     return this.state;
   }
 
+  public getSchemaSQL(): string {
+    return SCHEMA_SQL;
+  }
+
+  public getSeedSQL(): string {
+    return SEED_SQL;
+  }
+
   public resetToDefault() {
-    this.state = {
-      users: [...INITIAL_USERS],
-      categories: [...INITIAL_CATEGORIES],
-      items: [...INITIAL_ITEMS],
-      itemImages: [...INITIAL_ITEM_IMAGES],
-      listings: [...INITIAL_LISTINGS],
-      listingRequests: [...INITIAL_LISTING_REQUESTS],
-      transactions: [...INITIAL_TRANSACTIONS],
-      loans: [...INITIAL_LOANS],
-      payments: [...INITIAL_PAYMENTS],
-      reviews: [...INITIAL_REVIEWS],
-      disputes: [...INITIAL_DISPUTES],
-      savedListings: [...INITIAL_SAVED_LISTINGS],
-      reports: [...INITIAL_REPORTS],
-      reportActions: [...INITIAL_REPORT_ACTIONS],
-      messages: [...INITIAL_MESSAGES],
-    };
-    this.saveState();
-  }
-
-  /**
-   * Registers/syncs all 15 tables with AlaSQL so real SQL queries can be run!
-   */
-  public syncAlasql() {
     try {
-      alasql('DROP TABLE IF EXISTS Users');
-      alasql('DROP TABLE IF EXISTS Categories');
-      alasql('DROP TABLE IF EXISTS Items');
-      alasql('DROP TABLE IF EXISTS Item_Images');
-      alasql('DROP TABLE IF EXISTS Listings');
-      alasql('DROP TABLE IF EXISTS Listing_Requests');
-      alasql('DROP TABLE IF EXISTS Transactions');
-      alasql('DROP TABLE IF EXISTS Loans');
-      alasql('DROP TABLE IF EXISTS Payments');
-      alasql('DROP TABLE IF EXISTS Reviews');
-      alasql('DROP TABLE IF EXISTS Disputes');
-      alasql('DROP TABLE IF EXISTS Saved_Listings');
-      alasql('DROP TABLE IF EXISTS Reports');
-      alasql('DROP TABLE IF EXISTS Report_Actions');
-      alasql('DROP TABLE IF EXISTS Messages');
-
-      alasql.tables.Users = { data: JSON.parse(JSON.stringify(this.state.users)) };
-      alasql.tables.Categories = { data: JSON.parse(JSON.stringify(this.state.categories)) };
-      alasql.tables.Items = { data: JSON.parse(JSON.stringify(this.state.items)) };
-      alasql.tables.Item_Images = { data: JSON.parse(JSON.stringify(this.state.itemImages)) };
-      alasql.tables.Listings = { data: JSON.parse(JSON.stringify(this.state.listings)) };
-      alasql.tables.Listing_Requests = { data: JSON.parse(JSON.stringify(this.state.listingRequests)) };
-      alasql.tables.Transactions = { data: JSON.parse(JSON.stringify(this.state.transactions)) };
-      alasql.tables.Loans = { data: JSON.parse(JSON.stringify(this.state.loans)) };
-      alasql.tables.Payments = { data: JSON.parse(JSON.stringify(this.state.payments)) };
-      alasql.tables.Reviews = { data: JSON.parse(JSON.stringify(this.state.reviews)) };
-      alasql.tables.Disputes = { data: JSON.parse(JSON.stringify(this.state.disputes)) };
-      alasql.tables.Saved_Listings = { data: JSON.parse(JSON.stringify(this.state.savedListings)) };
-      alasql.tables.Reports = { data: JSON.parse(JSON.stringify(this.state.reports)) };
-      alasql.tables.Report_Actions = { data: JSON.parse(JSON.stringify(this.state.reportActions)) };
-      alasql.tables.Messages = { data: JSON.parse(JSON.stringify(this.state.messages)) };
-    } catch (e) {
-      console.error('Failed to sync tables to AlaSQL:', e);
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // Ignore storage removal errors
     }
+    this.sqlDb.exec(SCHEMA_SQL);
+    this.sqlDb.exec(SEED_SQL);
+    this.syncAndPersist();
   }
 
   /**
-   * Execute an arbitrary SQL query against the 15 live tables
+   * Execute an arbitrary SQL query directly against the 15 SQL-created tables
    */
   public executeSQL(sqlQuery: string): { data: any[]; executionTimeMs: number; error?: string } {
     const startTime = performance.now();
     try {
-      this.syncAlasql();
       const cleanSql = sqlQuery.trim();
-      const result = alasql(cleanSql);
+      const result = this.sqlDb.exec(cleanSql);
       const executionTimeMs = Math.round((performance.now() - startTime) * 100) / 100;
+
+      // If user executed DML/DDL in SQL Studio, refresh reactive state & persistence
+      if (!/^(SELECT|SHOW)\b/i.test(cleanSql)) {
+        this.syncAndPersist();
+      }
+
+      const formatted = Array.isArray(result)
+        ? result.map((r: any) => (r && typeof r === 'object' ? normalizeRow(r) : r))
+        : [result];
+
       return {
-        data: Array.isArray(result) ? result : [result],
+        data: formatted,
         executionTimeMs,
       };
     } catch (err: any) {
@@ -359,7 +379,17 @@ export class DatabaseEngine {
   // --- Enriched Query Helpers ---
 
   public getEnrichedListings(currentUserId?: number): EnrichedListing[] {
-    return this.state.listings.map((listing) => {
+    // Keep newly created listings (listing_id > 10) at top, seeded listings 1..10 in canonical order
+    const orderedListings = [...this.state.listings].sort((a, b) => {
+      const aNew = a.listing_id > 10;
+      const bNew = b.listing_id > 10;
+      if (aNew && !bNew) return -1;
+      if (!aNew && bNew) return 1;
+      if (aNew && bNew) return b.listing_id - a.listing_id;
+      return a.listing_id - b.listing_id;
+    });
+
+    return orderedListings.map((listing) => {
       const item = this.state.items.find((i) => i.item_id === listing.item_id) || {
         item_id: listing.item_id,
         owner_id: 1,
@@ -395,7 +425,13 @@ export class DatabaseEngine {
     });
   }
 
-  // --- CRUD Mutations ---
+  private getNextId(table: string, idCol: string): number {
+    const rows = this.sqlDb.exec(`SELECT MAX(${idCol}) AS max_id FROM ${table}`);
+    const maxVal = Array.isArray(rows) && rows[0]?.max_id ? Number(rows[0].max_id) : 0;
+    return Number.isFinite(maxVal) ? maxVal + 1 : 1;
+  }
+
+  // --- SQL DML Mutations ---
 
   public createListing(params: {
     ownerId: number;
@@ -409,8 +445,13 @@ export class DatabaseEngine {
     expiryDate?: string;
     imageUrl?: string;
   }): { listing: Listing; item: Item } {
-    const newItemId = this.state.items.length > 0 ? Math.max(...this.state.items.map((i) => i.item_id)) + 1 : 1;
+    const newItemId = this.getNextId('Items', 'item_id');
+    const newImageId = this.getNextId('Item_Images', 'image_id');
+    const newListingId = this.getNextId('Listings', 'listing_id');
     const now = new Date().toISOString();
+    const expiryDate =
+      params.expiryDate ||
+      new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
     const newItem: Item = {
       item_id: newItemId,
@@ -422,7 +463,6 @@ export class DatabaseEngine {
       created_at: now,
     };
 
-    const newImageId = this.state.itemImages.length > 0 ? Math.max(...this.state.itemImages.map((img) => img.image_id)) + 1 : 1;
     const newImage: ItemImage = {
       image_id: newImageId,
       item_id: newItemId,
@@ -430,7 +470,6 @@ export class DatabaseEngine {
       uploaded_at: now,
     };
 
-    const newListingId = this.state.listings.length > 0 ? Math.max(...this.state.listings.map((l) => l.listing_id)) + 1 : 1;
     const newListing: Listing = {
       listing_id: newListingId,
       item_id: newItemId,
@@ -438,14 +477,14 @@ export class DatabaseEngine {
       price: params.price,
       deposit_amount: params.depositAmount,
       posted_at: now,
-      expiry_date: params.expiryDate || new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      expiry_date: expiryDate,
       listing_status: 'active',
     };
 
-    this.state.items.unshift(newItem);
-    this.state.itemImages.unshift(newImage);
-    this.state.listings.unshift(newListing);
-    this.saveState();
+    this.insertRow('Items', newItem);
+    this.insertRow('Item_Images', newImage);
+    this.insertRow('Listings', newListing);
+    this.syncAndPersist();
 
     return { listing: newListing, item: newItem };
   }
@@ -458,9 +497,7 @@ export class DatabaseEngine {
     handoverLocation?: string;
     handoverTime?: string;
   }): ListingRequest {
-    const newRequestId = this.state.listingRequests.length > 0
-      ? Math.max(...this.state.listingRequests.map((r) => r.request_id)) + 1
-      : 1;
+    const newRequestId = this.getNextId('Listing_Requests', 'request_id');
 
     const newRequest: ListingRequest = {
       request_id: newRequestId,
@@ -474,39 +511,47 @@ export class DatabaseEngine {
       handover_time: params.handoverTime || 'Lunch Break (1:30 PM)',
     };
 
-    this.state.listingRequests.unshift(newRequest);
-    this.saveState();
+    this.insertRow('Listing_Requests', newRequest);
+    this.syncAndPersist();
     return newRequest;
   }
 
   public acceptRequest(requestId: number): { transaction: Transaction; loan?: Loan } {
-    const request = this.state.listingRequests.find((r) => r.request_id === requestId);
+    const requests = this.queryTable<ListingRequest>(
+      `SELECT * FROM Listing_Requests WHERE request_id = ${Number(requestId)}`
+    );
+    const request = requests[0];
     if (!request) throw new Error('Request not found');
 
-    request.request_status = 'accepted';
+    this.sqlDb.exec(
+      `UPDATE Listing_Requests SET request_status = 'accepted' WHERE request_id = ?`,
+      [requestId]
+    );
 
-    const listing = this.state.listings.find((l) => l.listing_id === request.listing_id);
+    const listings = this.queryTable<Listing>(
+      `SELECT * FROM Listings WHERE listing_id = ${Number(request.listing_id)}`
+    );
+    const listing = listings[0];
     if (listing) {
-      listing.listing_status = 'reserved';
+      this.sqlDb.exec(
+        `UPDATE Listings SET listing_status = 'reserved' WHERE listing_id = ?`,
+        [listing.listing_id]
+      );
     }
 
-    const newTxId = this.state.transactions.length > 0
-      ? Math.max(...this.state.transactions.map((t) => t.transaction_id)) + 1
-      : 1;
-
+    const newTxId = this.getNextId('Transactions', 'transaction_id');
     const newTransaction: Transaction = {
       transaction_id: newTxId,
       request_id: requestId,
       transaction_status: 'in_progress',
-      agreed_amount: listing ? listing.price : 0,
+      agreed_amount: listing ? Number(listing.price) : 0,
       created_at: new Date().toISOString(),
       completed_at: null,
     };
-    this.state.transactions.unshift(newTransaction);
+    this.insertRow('Transactions', newTransaction);
 
     let newLoan: Loan | undefined = undefined;
     if (listing && listing.listing_type === 'lend') {
-      // Default loan 14 days or due date
       const dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       newLoan = {
         transaction_id: newTxId,
@@ -515,19 +560,16 @@ export class DatabaseEngine {
         loan_status: 'active',
         condition_on_return: null,
       };
-      this.state.loans.unshift(newLoan);
+      this.insertRow('Loans', newLoan);
 
-      // Record deposit payment
-      if (listing.deposit_amount > 0) {
-        const newPaymentId = this.state.payments.length > 0
-          ? Math.max(...this.state.payments.map((p) => p.payment_id)) + 1
-          : 1;
-        this.state.payments.unshift({
+      if (Number(listing.deposit_amount) > 0) {
+        const newPaymentId = this.getNextId('Payments', 'payment_id');
+        this.insertRow('Payments', {
           payment_id: newPaymentId,
           transaction_id: newTxId,
           payer_id: request.requester_id,
           payment_type: 'deposit',
-          amount: listing.deposit_amount,
+          amount: Number(listing.deposit_amount),
           payment_method: 'upi',
           payment_status: 'completed',
           paid_at: new Date().toISOString(),
@@ -535,68 +577,97 @@ export class DatabaseEngine {
       }
     }
 
-    this.saveState();
+    this.syncAndPersist();
     return { transaction: newTransaction, loan: newLoan };
   }
 
   public rejectRequest(requestId: number) {
-    const request = this.state.listingRequests.find((r) => r.request_id === requestId);
-    if (request) {
-      request.request_status = 'rejected';
-      this.saveState();
-    }
+    this.sqlDb.exec(
+      `UPDATE Listing_Requests SET request_status = 'rejected' WHERE request_id = ?`,
+      [requestId]
+    );
+    this.syncAndPersist();
   }
 
   public completeTransaction(transactionId: number) {
-    const tx = this.state.transactions.find((t) => t.transaction_id === transactionId);
+    const txs = this.queryTable<Transaction>(
+      `SELECT * FROM Transactions WHERE transaction_id = ${Number(transactionId)}`
+    );
+    const tx = txs[0];
     if (!tx) return;
 
-    tx.transaction_status = 'completed';
-    tx.completed_at = new Date().toISOString();
+    const now = new Date().toISOString();
+    this.sqlDb.exec(
+      `UPDATE Transactions SET transaction_status = 'completed', completed_at = ? WHERE transaction_id = ?`,
+      [now, transactionId]
+    );
 
-    const request = this.state.listingRequests.find((r) => r.request_id === tx.request_id);
+    const requests = this.queryTable<ListingRequest>(
+      `SELECT * FROM Listing_Requests WHERE request_id = ${Number(tx.request_id)}`
+    );
+    const request = requests[0];
     if (request) {
-      request.request_status = 'fulfilled';
-      const listing = this.state.listings.find((l) => l.listing_id === request.listing_id);
-      if (listing) {
-        listing.listing_status = 'completed';
-      }
+      this.sqlDb.exec(
+        `UPDATE Listing_Requests SET request_status = 'fulfilled' WHERE request_id = ?`,
+        [request.request_id]
+      );
+      this.sqlDb.exec(
+        `UPDATE Listings SET listing_status = 'completed' WHERE listing_id = ?`,
+        [request.listing_id]
+      );
     }
 
-    this.saveState();
+    this.syncAndPersist();
   }
 
   public returnBorrowedItem(transactionId: number, conditionNotes: string = 'Item returned in sound condition') {
-    const loan = this.state.loans.find((l) => l.transaction_id === transactionId);
-    if (!loan) return;
+    const loans = this.queryTable<Loan>(
+      `SELECT * FROM Loans WHERE transaction_id = ${Number(transactionId)}`
+    );
+    if (!loans[0]) return;
 
     const now = new Date().toISOString();
-    loan.loan_status = 'returned';
-    loan.returned_at = now;
-    loan.condition_on_return = conditionNotes;
+    this.sqlDb.exec(
+      `UPDATE Loans SET loan_status = 'returned', returned_at = ?, condition_on_return = ? WHERE transaction_id = ?`,
+      [now, conditionNotes, transactionId]
+    );
 
-    // Trigger deposit refund payment
-    const tx = this.state.transactions.find((t) => t.transaction_id === transactionId);
+    const txs = this.queryTable<Transaction>(
+      `SELECT * FROM Transactions WHERE transaction_id = ${Number(transactionId)}`
+    );
+    const tx = txs[0];
     if (tx) {
-      tx.transaction_status = 'completed';
-      tx.completed_at = now;
+      this.sqlDb.exec(
+        `UPDATE Transactions SET transaction_status = 'completed', completed_at = ? WHERE transaction_id = ?`,
+        [now, transactionId]
+      );
 
-      const request = this.state.listingRequests.find((r) => r.request_id === tx.request_id);
+      const requests = this.queryTable<ListingRequest>(
+        `SELECT * FROM Listing_Requests WHERE request_id = ${Number(tx.request_id)}`
+      );
+      const request = requests[0];
       if (request) {
-        request.request_status = 'fulfilled';
-        const listing = this.state.listings.find((l) => l.listing_id === request.listing_id);
-        if (listing && listing.deposit_amount > 0) {
-          const item = this.state.items.find((i) => i.item_id === listing.item_id);
-          const refundPaymentId = this.state.payments.length > 0
-            ? Math.max(...this.state.payments.map((p) => p.payment_id)) + 1
-            : 1;
+        this.sqlDb.exec(
+          `UPDATE Listing_Requests SET request_status = 'fulfilled' WHERE request_id = ?`,
+          [request.request_id]
+        );
+        const listings = this.queryTable<Listing>(
+          `SELECT * FROM Listings WHERE listing_id = ${Number(request.listing_id)}`
+        );
+        const listing = listings[0];
+        if (listing && Number(listing.deposit_amount) > 0) {
+          const items = this.queryTable<Item>(
+            `SELECT * FROM Items WHERE item_id = ${Number(listing.item_id)}`
+          );
+          const item = items[0];
+          const refundPaymentId = this.getNextId('Payments', 'payment_id');
 
-          this.state.payments.unshift({
+          this.insertRow('Payments', {
             payment_id: refundPaymentId,
             transaction_id: transactionId,
-            payer_id: item ? item.owner_id : 1, // Lender refunds to borrower
+            payer_id: item ? item.owner_id : 1,
             payment_type: 'refund',
-            amount: listing.deposit_amount,
+            amount: Number(listing.deposit_amount),
             payment_method: 'upi',
             payment_status: 'refunded',
             paid_at: now,
@@ -605,7 +676,7 @@ export class DatabaseEngine {
       }
     }
 
-    this.saveState();
+    this.syncAndPersist();
   }
 
   public addReview(params: {
@@ -615,11 +686,8 @@ export class DatabaseEngine {
     rating: number;
     comment: string;
   }) {
-    const newRevId = this.state.reviews.length > 0
-      ? Math.max(...this.state.reviews.map((r) => r.review_id)) + 1
-      : 1;
-
-    this.state.reviews.unshift({
+    const newRevId = this.getNextId('Reviews', 'review_id');
+    this.insertRow('Reviews', {
       review_id: newRevId,
       transaction_id: params.transactionId,
       reviewer_id: params.reviewerId,
@@ -628,8 +696,7 @@ export class DatabaseEngine {
       comment: params.comment,
       created_at: new Date().toISOString(),
     });
-
-    this.saveState();
+    this.syncAndPersist();
   }
 
   public raiseDispute(params: {
@@ -638,62 +705,59 @@ export class DatabaseEngine {
     disputeReason: string;
     description: string;
   }) {
-    const newDispId = this.state.disputes.length > 0
-      ? Math.max(...this.state.disputes.map((d) => d.dispute_id)) + 1
-      : 1;
-
-    this.state.disputes.unshift({
+    const newDispId = this.getNextId('Disputes', 'dispute_id');
+    this.insertRow('Disputes', {
       dispute_id: newDispId,
       transaction_id: params.transactionId,
       raised_by: params.raisedBy,
       dispute_reason: params.disputeReason,
       description: params.description,
       resolution_status: 'open',
-      assigned_admin: 6, // Admin
+      assigned_admin: 6,
       raised_at: new Date().toISOString(),
       resolved_at: null,
     });
 
-    const tx = this.state.transactions.find((t) => t.transaction_id === params.transactionId);
-    if (tx) {
-      tx.transaction_status = 'disputed';
-    }
-
-    this.saveState();
+    this.sqlDb.exec(
+      `UPDATE Transactions SET transaction_status = 'disputed' WHERE transaction_id = ?`,
+      [params.transactionId]
+    );
+    this.syncAndPersist();
   }
 
   public resolveDispute(disputeId: number, resolution: string, status: 'resolved' | 'rejected') {
-    const disp = this.state.disputes.find((d) => d.dispute_id === disputeId);
-    if (disp) {
-      disp.resolution_status = status;
-      disp.resolution = resolution;
-      disp.resolved_at = new Date().toISOString();
-      this.saveState();
-    }
+    this.sqlDb.exec(
+      `UPDATE Disputes SET resolution_status = ?, resolution = ?, resolved_at = ? WHERE dispute_id = ?`,
+      [status, resolution, new Date().toISOString(), disputeId]
+    );
+    this.syncAndPersist();
   }
 
   public verifyUser(userId: number, status: 'verified' | 'rejected') {
-    const user = this.state.users.find((u) => u.user_id === userId);
-    if (user) {
-      user.verification_status = status;
-      this.saveState();
-    }
+    this.sqlDb.exec(
+      `UPDATE Users SET verification_status = ? WHERE user_id = ?`,
+      [status, userId]
+    );
+    this.syncAndPersist();
   }
 
   public toggleSavedListing(userId: number, listingId: number) {
-    const index = this.state.savedListings.findIndex(
-      (sl) => sl.user_id === userId && sl.listing_id === listingId
+    const existing = this.queryTable<SavedListing>(
+      `SELECT * FROM Saved_Listings WHERE user_id = ${Number(userId)} AND listing_id = ${Number(listingId)}`
     );
-    if (index >= 0) {
-      this.state.savedListings.splice(index, 1);
+    if (existing.length > 0) {
+      this.sqlDb.exec(
+        `DELETE FROM Saved_Listings WHERE user_id = ? AND listing_id = ?`,
+        [userId, listingId]
+      );
     } else {
-      this.state.savedListings.push({
+      this.insertRow('Saved_Listings', {
         user_id: userId,
         listing_id: listingId,
         saved_at: new Date().toISOString(),
       });
     }
-    this.saveState();
+    this.syncAndPersist();
   }
 
   public sendMessage(params: {
@@ -702,11 +766,8 @@ export class DatabaseEngine {
     listingId?: number | null;
     messageText: string;
   }) {
-    const newMsgId = this.state.messages.length > 0
-      ? Math.max(...this.state.messages.map((m) => m.message_id)) + 1
-      : 1;
-
-    this.state.messages.push({
+    const newMsgId = this.getNextId('Messages', 'message_id');
+    this.insertRow('Messages', {
       message_id: newMsgId,
       sender_id: params.senderId,
       receiver_id: params.receiverId,
@@ -715,8 +776,28 @@ export class DatabaseEngine {
       sent_at: new Date().toISOString(),
       read_at: null,
     });
+    this.syncAndPersist();
+  }
 
-    this.saveState();
+  public createReport(params: {
+    reporterId: number;
+    reportedUserId: number;
+    listingId?: number | null;
+    reportReason: string;
+    description: string;
+  }) {
+    const newReportId = this.getNextId('Reports', 'report_id');
+    this.insertRow('Reports', {
+      report_id: newReportId,
+      reporter_id: params.reporterId,
+      reported_user_id: params.reportedUserId,
+      listing_id: params.listingId ?? null,
+      report_reason: params.reportReason,
+      description: params.description,
+      report_status: 'pending',
+      reported_at: new Date().toISOString(),
+    });
+    this.syncAndPersist();
   }
 }
 

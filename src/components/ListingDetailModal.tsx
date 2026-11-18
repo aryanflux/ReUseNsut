@@ -99,18 +99,13 @@ export const ListingDetailModal: React.FC<ListingDetailModalProps> = ({
   };
 
   const handleReportListing = () => {
-    const newReportId = state.reports.length > 0 ? Math.max(...state.reports.map((r) => r.report_id)) + 1 : 1;
-    state.reports.unshift({
-      report_id: newReportId,
-      reporter_id: currentUser.user_id,
-      reported_user_id: owner.user_id,
-      listing_id: listing.listing_id,
-      report_reason: reportReason,
+    dbEngine.createReport({
+      reporterId: currentUser.user_id,
+      reportedUserId: owner.user_id,
+      listingId: listing.listing_id,
+      reportReason,
       description: `Reported by ${currentUser.name} regarding item #${item.item_id}`,
-      report_status: 'pending',
-      reported_at: new Date().toISOString(),
     });
-    dbEngine.syncAlasql();
     onSuccessAction('Listing reported to campus proctor for review.');
     setShowReportForm(false);
   };
